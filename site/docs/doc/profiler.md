@@ -138,6 +138,8 @@ Perf events:
 
 如果遇到 OS 本身的权限/配置问题，然后缺少部分 event，可以参考 [async-profiler 的文档](https://github.com/jvm-profiling-tools/async-profiler)。
 
+可以使用 `check` action 测试某个 event 是否可用，此 action 的参数格式与 start 一致。
+
 可以用`--event`参数指定要采样的事件，比如 `alloc` 表示分析内存分配情况：
 
 ```bash
@@ -178,13 +180,13 @@ profiler execute 'start,framebuf=5000000'
 profiler execute 'stop,file=/tmp/result.html'
 ```
 
-具体的格式参考： [arguments.cpp](https://github.com/jvm-profiling-tools/async-profiler/blob/v2.5/src/arguments.cpp#L50)
+具体的格式参考： [arguments.cpp](https://github.com/async-profiler/async-profiler/blob/v2.9/src/arguments.cpp#L52)
 
 ## 查看所有支持的 action
 
 ```bash
 $ profiler actions
-Supported Actions: [resume, dumpCollapsed, getSamples, start, list, version, execute, meminfo, stop, load, dumpFlat, dump, actions, dumpTraces, status]
+Supported Actions: [resume, dumpCollapsed, getSamples, start, list, version, execute, meminfo, stop, load, dumpFlat, dump, actions, dumpTraces, status, check]
 ```
 
 ## 查看版本
@@ -224,10 +226,10 @@ profiler stop --include 'java/*' --include 'com/demo/*' --exclude '*Unsafe.park*
 
 ## 指定执行时间
 
-比如，希望 profiler 执行 300 秒自动结束，可以用 `-d`/`--duration` 参数指定：
+比如，希望 profiler 执行 300 秒自动结束，可以用 `-d`/`--duration` 参数为 collect action 指定时间：
 
 ```bash
-profiler start --duration 300
+profiler collect --duration 300
 ```
 
 ## 生成 jfr 格式结果
@@ -281,3 +283,70 @@ profiler start -e alloc --alloc 2m
 ```bash
 profiler start -f profile.jfr --chunksize 100m --chunktime 1h
 ```
+
+## 将线程按照调度策略分组
+
+可以使用 `--sched` 标志选项将输出结果按照 Linux 线程调度策略分组，策略包括 BATCH/IDLE/OTHER。例如：
+
+```bash
+profiler start --sched
+```
+
+火焰图的倒数第二行会标记不同的调度策略。
+
+## 仅用未销毁对象构建内存分析结果
+
+使用 `--live` 标志选项在内存分析结果中仅保留那些在分析过程结束时仍未被 JVM 回收的对象。该选项在排查 Java 堆内存泄露问题时比较有用。
+
+```bash
+profiler start --live
+```
+
+## 配置收集 C 栈帧的方法
+
+使用 `--cstack MODE` 配置收集 native 帧的方法。候选模式有 fp (Frame Pointer), dwarf (DWARF unwind info), lbr (Last Branch Record, 从 Linux 4.1 在 Haswell 可用), and no (不收集 native 栈帧).
+
+默认情况下，C 栈帧会出现在 cpu、itimer、wall-clock、perf-events 模式中，而 Java 级别的 event 比如 alloc 和 lock 只收集 Java stack。
+
+```bash
+profiler --cstack fp
+```
+
+此命令将收集 native 栈帧的 Frame Pointer 信息。
+
+## 当指定 native 函数执行时开始/停止 profiling
+
+使用 `--begin function` 和 `--end function` 选项在指定 native 函数被执行时让 profiling 过程启动或终止。主要用途是分析特定的 JVM 阶段，比如 GC 和安全点。需要使用特定 JVM 实现中的 native 函数名，比如 HotSpot JVM 中的 `SafepointSynchronize::begin` 和 `SafepointSynchronize::end`。
+
+### Time-to-safepoint profiling
+
+选项 `--ttsp` 实际上是 `--begin SafepointSynchronize::begin --end RuntimeService::record_safepoint_synchronized` 的一个别名。它是一种约束而不是独立的 event 类型。无论选择哪种 event，profiler 都可以正常工作，但只有 VM 操作和 safepoint request 之间的事件会被记录下来。
+
+```bash
+profiler start --begin SafepointSynchronize::begin --end RuntimeService::record_safepoint_synchronized
+profiler --ttsp
+```
+
+## 使用 profiler 记录的 event 生成 JFR 文件
+
+用 `--jfrsync CONFIG` 选项可以指定配置启动 Java Flight Recording，输出的 jfr 文件会包含所有常规的 JFR event，但采样的来源是由 profiler 提供的。
+
+`CONFIG` 选项可以是 `profile`，表示使用在 `$JAVA_HOME/lib/jfr` 目录下预置的“profile”配置，也可以是自定义的 JFR 配置文件（.jfc），此选项的值采用与 [JFR.start 命令的 settings 选项](https://docs.oracle.com/en/java/javase/17/docs/specs/man/jcmd.html) 相同的格式。
+
+比如，以下命令使用“profile”配置启动 JFR：
+
+```bash
+profiler start -e cpu --jfrsync profile -f combined.jfr
+```
+
+## 周期性保存结果
+
+使用 `--loop TIME` 可以持续运行 profiler 并周期性保存结果。选项格式可以是具体时间 hh:mm:ss 或以秒、分钟、小时或天计算的时间间隔。需要确保指定的输出文件名中包含时间戳，否则每次输出的结果都会覆盖上次保存的结果。以下命令持续执行 profiling 并将每个小时内的记录保存到一个 jfr 文件中。
+
+```bash
+profiler start --loop 1h -f /var/log/profile-%t.jfr
+```
+
+## `--timeout` 选项
+
+这个选项指定 profiling 自动在多久后停止。该选项和 `--loop` 选项的格式一致，可以是时间点，也可以是一个时间间隔。这两个选项都是用于 `start` action 而不是 `collect` action 的。可参考 [async-profiler Github Discussions](https://github.com/async-profiler/async-profiler/discussions/789) 了解更多信息。

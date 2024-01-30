@@ -138,6 +138,8 @@ Perf events:
 
 If you encounter the permissions/configuration issues of the OS itself and then missing some events, you can refer to the [async-profiler](https://github.com/jvm-profiling-tools/async-profiler) documentation.
 
+You can use `check` action to check if a profiling event is available, this action receives the same format options with `start`.
+
 You can use the `--event` parameter to specify the event to sample, for example, `alloc` event means heap memory allocation profiling:
 
 ```bash
@@ -178,13 +180,13 @@ Stop sampling and save to the specified file:
 profiler execute 'stop,file=/tmp/result.html'
 ```
 
-Specific format reference: [arguments.cpp](https://github.com/jvm-profiling-tools/async-profiler/blob/v2.5/src/arguments.cpp#L50)
+Specific format reference: [arguments.cpp](https://github.com/async-profiler/async-profiler/blob/v2.9/src/arguments.cpp#L52)
 
 ## View all supported actions
 
 ```bash
 $ profiler actions
-Supported Actions: [resume, dumpCollapsed, getSamples, start, list, version, execute, meminfo, stop, load, dumpFlat, dump, actions, dumpTraces, status]
+Supported Actions: [resume, dumpCollapsed, getSamples, start, list, version, execute, meminfo, stop, load, dumpFlat, dump, actions, dumpTraces, status, check]
 ```
 
 ## View version
@@ -224,10 +226,10 @@ profiler stop --include'java/*' --include 'com/demo/*' --exclude'*Unsafe.park*'
 
 ## Specify execution time
 
-For example, if you want the profiler to automatically end after 300 seconds, you can specify it with the `-d`/`--duration` parameter:
+For example, if you want the profiler to automatically end after 300 seconds, you can specify it with the `-d`/`--duration` parameter in collect action:
 
 ```bash
-profiler start --duration 300
+profiler collect --duration 300
 ```
 
 ## Generate jfr format result
@@ -281,3 +283,72 @@ When using JFR as output format, you can use `--chunksize` or `--chunktime` to c
 ```bash
 profiler start -f profile.jfr --chunksize 100m --chunktime 1h
 ```
+
+## Group threads by scheduling policy
+
+You can use `--sched` flag option to group threads in output by Linux-specific scheduling policy: BATCH/IDLE/OTHER, for example:
+
+```bash
+profiler start --sched
+```
+
+The second line from bottom in flamegraph represent the scheduling policy.
+
+## Build allocation profile from live objects only
+
+Use `--live` flag option to retain allocation samples with live objects only (object that have not been collected by the end of profiling session). Useful for finding Java heap memory leaks.
+
+```bash
+profiler start --live
+```
+
+## Config method of collecting C stack frames
+
+Use `--cstack MODE` to config how to walk native frames (C stack). Possible modes are fp (Frame Pointer), dwarf (DWARF unwind info), lbr (Last Branch Record, available on Haswell since Linux 4.1), and no (do not collect C stack).
+
+By default, C stack is shown in cpu, itimer, wall-clock and perf-events profiles. Java-level events like alloc and lock collect only Java stack.
+
+```bash
+profiler --cstack fp
+```
+
+The command above will collection Frame Pointer of C stacks.
+
+## Begin or end profiling when FUNCTION is executed
+
+Use `--begin function` and `--end function` to automatically start/stop profiling when the specified native function is executed. Its main purpose is to profile certain JVM phases like GC and Safepoint pauses. You should use native function name defined in a JVM implement, for example `SafepointSynchronize::begin` and `SafepointSynchronize::end` in HotSpot JVM.
+
+### Time-to-safepoint profiling
+
+The `--ttsp` option is an alias for `--begin SafepointSynchronize::begin --end RuntimeService::record_safepoint_synchronized`. It is not a separate event type, but rather a constraint. Whatever event type you choose (e.g. cpu or wall), the profiler will work as usual, except that only events between the safepoint request and the start of the VM operation will be recorded.
+
+```bash
+profiler start --begin SafepointSynchronize::begin --end RuntimeService::record_safepoint_synchronized
+profiler --ttsp
+```
+
+## Use events from profiler for Java Flight Recording
+
+Use `--jfrsync CONFIG` to start Java Flight Recording with the given configuration synchronously with the profiler. The output .jfr file will include all regular JFR events, except that execution samples will be obtained from async-profiler. This option implies -o jfr.
+
+`CONFIG` can be `profile`, means using the predefined JFR config "profile" in `$JAVA_HOME/lib/jfr/`, or full path of a JFR configuration file (.jfc), this value has the same format with [settings option of JFR.start](https://docs.oracle.com/en/java/javase/17/docs/specs/man/jcmd.html).
+
+For example, command below use "profile" config of JFR:
+
+```bash
+profiler start -e cpu --jfrsync profile -f combined.jfr
+```
+
+## Run profiler in a loop
+
+Use `--loop TIME` to run profiler in a loop (continuous profiling). The argument is either a clock time (hh:mm:ss) or a loop duration in seconds, minutes, hours, or days. Make sure the filename includes a timestamp pattern, or the output will be overwritten on each iteration. The command below will run profiling endlessly and save records of each hour to a jfr file.
+
+```bash
+profiler start --loop 1h -f /var/log/profile-%t.jfr
+```
+
+## `--timeout` option
+
+This option specifies the time when profiling will automatically stop. The format is the same as in loop: it is either a wall clock time (12:34:56) or a relative time interval (2h).
+
+Both `--loop` and `--timeout` are used for `start` action but not for `collect` action, for further information refer to [async-profiler Github Discussions](https://github.com/async-profiler/async-profiler/discussions/789).
